@@ -13,5 +13,6 @@ htmlcov/
 # macOS
 .DS_Store
 
-# Output / logs
+# Output
 *.png
+results/

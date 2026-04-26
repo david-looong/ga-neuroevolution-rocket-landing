@@ -283,43 +283,61 @@ def evaluate_population(population, cur, trial_seeds, pool):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Main training loop
+#  Core training loop  (callable from experiment.py or interactively)
 # ═══════════════════════════════════════════════════════════════════
 
-def main():
+def train(
+    headless: bool = True,
+    run_id: str = "default",
+    population_size: int = POPULATION_SIZE,
+    num_generations: int = NUM_GENERATIONS,
+    tournament_size: int = TOURNAMENT_SIZE,
+    crossover_rate: float = CROSSOVER_RATE,
+    mutation_rate: float = MUTATION_RATE,
+    mutation_sigma: float = MUTATION_SIGMA,
+    elitism_count: int = ELITISM_COUNT,
+) -> dict:
+    """Run the GA training loop and return per-generation metrics.
+
+    Returns:
+        {
+            "generations": list of per-generation metric dicts,
+            "summary":     single dict with run-level summary stats,
+        }
+    """
     rng = np.random.default_rng(RANDOM_SEED)
     genome_size = NeuralNetwork.genome_size(NN_LAYERS)
 
     import os
     n_workers = os.cpu_count() or 4
 
-    print(f"Genome size : {genome_size} parameters")
-    print(f"Population  : {POPULATION_SIZE}   Generations: {NUM_GENERATIONS}")
-    print(f"Trials/genome: {NUM_EVAL_TRIALS}   Workers: {n_workers}\n")
+    if not headless:
+        print(f"Genome size : {genome_size} parameters")
+        print(f"Population  : {population_size}   Generations: {num_generations}")
+        print(f"Trials/genome: {NUM_EVAL_TRIALS}   Workers: {n_workers}\n")
 
     ga = GeneticAlgorithm(
-        pop_size=POPULATION_SIZE, genome_size=genome_size,
-        tournament_size=TOURNAMENT_SIZE, crossover_rate=CROSSOVER_RATE,
-        mutation_rate=MUTATION_RATE, mutation_sigma=MUTATION_SIGMA,
-        elitism_count=ELITISM_COUNT,
+        pop_size=population_size, genome_size=genome_size,
+        tournament_size=tournament_size, crossover_rate=crossover_rate,
+        mutation_rate=mutation_rate, mutation_sigma=mutation_sigma,
+        elitism_count=elitism_count,
     )
     archive = NoveltyArchive(k=NOVELTY_K, archive_prob=NOVELTY_ARCHIVE_PROB)
     population = ga.initialize(rng)
 
+    gen_metrics: list[dict] = []
     best_hist: list[float] = []
     mean_hist: list[float] = []
     renderer = None
 
-    # Background training state: the next generation's evaluation runs
-    # in a background thread (which itself uses the process pool) while
-    # the preview is playing.
-    bg_result = None     # will hold (fitnesses, behaviours, landed, population, cur, elapsed)
-    bg_thread = None     # Thread handle
+    bg_result = None
+    bg_thread = None
+    run_start = time.time()
 
     try:
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
 
-            for gen in range(NUM_GENERATIONS):
+            for gen in range(num_generations):
                 cur = get_curriculum(gen)
                 trial_seeds = [int(rng.integers(0, 2 ** 31))
                                for _ in range(NUM_EVAL_TRIALS)]
@@ -353,7 +371,19 @@ def main():
 
                 phase = ("easy" if cur_used["max_wind"] == 0
                          else "medium" if cur_used["max_wind"] <= 5 else "hard")
-                print(f"Gen {gen+1:3d}/{NUM_GENERATIONS} │ "
+
+                gen_metrics.append({
+                    "run_id": run_id,
+                    "generation": gen + 1,
+                    "best_fitness": round(best_fit, 4),
+                    "mean_fitness": round(mean_fit, 4),
+                    "landing_rate": round(suc_rate, 4),
+                    "archive_size": len(archive.archive),
+                    "phase": phase,
+                    "elapsed_seconds": round(elapsed, 3),
+                })
+
+                print(f"Gen {gen+1:3d}/{num_generations} │ "
                       f"Best {best_fit:6.1f}  Mean {mean_fit:5.1f} │ "
                       f"Landed {suc_rate:5.1%} │ "
                       f"Archive {len(archive.archive):4d} │ "
@@ -364,7 +394,7 @@ def main():
                 next_pop = ga.next_generation(population, combined, rng)
 
                 # ── kick off background eval for next gen while preview plays ──
-                next_cur = get_curriculum(gen + 1) if gen + 1 < NUM_GENERATIONS else None
+                next_cur = get_curriculum(gen + 1) if gen + 1 < num_generations else None
                 if next_cur is not None:
                     next_seeds = [int(rng.integers(0, 2 ** 31))
                                   for _ in range(NUM_EVAL_TRIALS)]
@@ -382,58 +412,57 @@ def main():
                                        args=(_bg_eval,), daemon=True)
                     bg_thread.start()
 
-                # ── visualise all genomes ─────────────────────────────
-                try:
-                    if renderer is None:
-                        from renderer import Renderer
-                        renderer = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT,
-                                            VIS_SCALE, VIS_FPS)
+                # ── visualise all genomes (interactive mode only) ─────
+                if not headless:
+                    try:
+                        if renderer is None:
+                            from renderer import Renderer
+                            renderer = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT,
+                                                VIS_SCALE, VIS_FPS)
 
-                    replay_seed = (RANDOM_SEED + gen
-                                   if RANDOM_SEED is not None else None)
+                        replay_seed = (RANDOM_SEED + gen
+                                       if RANDOM_SEED is not None else None)
 
-                    def _make_replay():
-                        r = np.random.default_rng(replay_seed)
-                        s = make_sim(cur_used, r)
-                        i = random_initial(r)
-                        return s, i
+                        def _make_replay():
+                            r = np.random.default_rng(replay_seed)
+                            s = make_sim(cur_used, r)
+                            i = random_initial(r)
+                            return s, i
 
-                    # Select ~30 genomes spread across the fitness range
-                    # for a representative swarm preview
-                    n_show = min(30, POPULATION_SIZE)
-                    sorted_idxs = np.argsort(combined)[::-1]
-                    step = max(1, len(sorted_idxs) // n_show)
-                    show_idxs = sorted_idxs[::step][:n_show]
-                    if best_idx not in show_idxs:
-                        show_idxs = np.concatenate([[best_idx], show_idxs])
+                        n_show = min(30, population_size)
+                        sorted_idxs = np.argsort(combined)[::-1]
+                        step = max(1, len(sorted_idxs) // n_show)
+                        show_idxs = sorted_idxs[::step][:n_show]
+                        if best_idx not in show_idxs:
+                            show_idxs = np.concatenate([[best_idx], show_idxs])
 
-                    all_genomes = [(i, population[i]) for i in show_idxs]
+                        all_genomes = [(i, population[i]) for i in show_idxs]
 
-                    div_idxs = pick_diverse(population, behaviours, fitnesses, n=5)
-                    diverse = [
-                        (f"Diverse #{j+1}  fit={fitnesses[di]:.1f}", population[di])
-                        for j, di in enumerate(div_idxs)
-                    ]
+                        div_idxs = pick_diverse(population, behaviours, fitnesses, n=5)
+                        diverse = [
+                            (f"Diverse #{j+1}  fit={fitnesses[di]:.1f}", population[di])
+                            for j, di in enumerate(div_idxs)
+                        ]
 
-                    gi = {"gen": gen + 1, "total_gen": NUM_GENERATIONS,
-                          "fitness": best_fit, "success_rate": suc_rate}
+                        gi = {"gen": gen + 1, "total_gen": num_generations,
+                              "fitness": best_fit, "success_rate": suc_rate}
 
-                    result = renderer.replay_generation(
-                        best_idx, all_genomes, NN_LAYERS, _make_replay,
-                        gi, normalize, diverse)
+                        result = renderer.replay_generation(
+                            best_idx, all_genomes, NN_LAYERS, _make_replay,
+                            gi, normalize, diverse)
 
-                    if result == "quit":
-                        print("  (window closed — continuing headless)")
-                        renderer = None
+                        if result == "quit":
+                            print("  (window closed — continuing headless)")
+                            renderer = None
 
-                except Exception as exc:
-                    if renderer is not None:
-                        try:
-                            renderer.close()
-                        except Exception:
-                            pass
-                        renderer = None
-                    print(f"  (vis error: {exc})")
+                    except Exception as exc:
+                        if renderer is not None:
+                            try:
+                                renderer.close()
+                            except Exception:
+                                pass
+                            renderer = None
+                        print(f"  (vis error: {exc})")
 
                 # ── wait for background eval if still running ─────────
                 if bg_thread is not None:
@@ -445,14 +474,37 @@ def main():
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.")
 
-    # ── final fitness plot ───────────────────────────────────────
-    if best_hist:
+    # ── build summary ────────────────────────────────────────────
+    converged_gen = -1
+    for m in gen_metrics:
+        if m["landing_rate"] >= 0.5:
+            converged_gen = m["generation"]
+            break
+
+    final = gen_metrics[-1] if gen_metrics else {}
+    summary = {
+        "run_id": run_id,
+        "pop_size": population_size,
+        "tournament_size": tournament_size,
+        "crossover_rate": crossover_rate,
+        "mutation_rate": mutation_rate,
+        "mutation_sigma": mutation_sigma,
+        "elitism_count": elitism_count,
+        "converged_gen": converged_gen,
+        "final_best_fitness": final.get("best_fitness", 0.0),
+        "final_mean_fitness": final.get("mean_fitness", 0.0),
+        "final_landing_rate": final.get("landing_rate", 0.0),
+        "total_seconds": round(time.time() - run_start, 1),
+    }
+
+    # ── final fitness plot (interactive mode only) ───────────────
+    if not headless and best_hist:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 5))
             ax.plot(best_hist, label="Best fitness", linewidth=1.5)
             ax.plot(mean_hist, label="Mean fitness", alpha=0.7)
-            ax.set_xticks(range(0, NUM_GENERATIONS+1, 25))
+            ax.set_xticks(range(0, num_generations + 1, 25))
             ax.set_xlabel("Generation")
             ax.set_ylabel("Fitness")
             ax.set_title("Fitness over generations")
@@ -464,6 +516,12 @@ def main():
             plt.show()
         except Exception as exc:
             print(f"Could not plot: {exc}")
+
+    return {"generations": gen_metrics, "summary": summary}
+
+
+def main():
+    train(headless=True)
 
 
 if __name__ == "__main__":
