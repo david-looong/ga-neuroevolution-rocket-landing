@@ -23,7 +23,7 @@ from concurrent.futures import ProcessPoolExecutor
 from threading import Thread
 
 from config import (
-    RANDOM_SEED, GRAVITY, ROCKET_MASS, MOMENT_OF_INERTIA, MAX_THRUST,
+    RANDOM_SEED, GRAVITY, DRY_MASS, FUEL_MASS, MOMENT_OF_INERTIA, MAX_THRUST,
     MAX_GIMBAL_ANGLE, THRUSTER_ARM, FUEL_CONSUMPTION, AIR_DENSITY, DRAG_CD_A,
     SIM_DT, MAX_SIM_TIME, PAD_X, PAD_WIDTH, WIND_OU_THETA, ALTITUDE_RANGE,
     HORIZONTAL_RANGE, INIT_VY_RANGE, INIT_VX_RANGE, INIT_ANGLE_RANGE,
@@ -65,7 +65,8 @@ def make_sim(cur: dict, rng: np.random.Generator):
     t = MAX_THRUST * (1 + rng.uniform(-tv, tv)) if tv else MAX_THRUST
     wind = WindModel(ou_theta=WIND_OU_THETA, max_wind=mw, rng=rng)
     return RocketSim(
-        gravity=g, mass=ROCKET_MASS, moi=MOMENT_OF_INERTIA,
+        gravity=g, dry_mass=DRY_MASS, fuel_mass=FUEL_MASS,
+        moi=MOMENT_OF_INERTIA,
         max_thrust=t, max_gimbal=MAX_GIMBAL_ANGLE,
         thruster_arm=THRUSTER_ARM, fuel_rate=FUEL_CONSUMPTION,
         air_density=AIR_DENSITY, drag_cd_a=DRAG_CD_A,
@@ -108,12 +109,12 @@ def compute_fitness(sim: RocketSim) -> float:
 
     1. Proximity to pad   (40 pts) — always; √-scaled for a gentle gradient
     2. Descent to ground  (20 pts) — always
-    3. Low terminal speed (25 pts) — gated on being near the ground
     4. Upright at end     (15 pts) — gated on being near the ground
-    5. Soft impact        (20 pts) — gated on ground contact; rewards low
+    5. Soft impact        (40 pts) — gated on ground contact; rewards low
                                      impact speed at the moment of touchdown
-    6. Survival time       (5 pts) — small incentive for staying alive
     7. Fuel efficiency    (40 pts) — ONLY awarded on a successful landing
+
+    40 + 20 + 15 + 40 + 40 = 155
 
     Max ≈ 165.  Early genomes score mostly on (1) and (2), giving them a
     gradient to climb even before they manage soft landings.
@@ -128,22 +129,22 @@ def compute_fitness(sim: RocketSim) -> float:
     # Gate speed / tilt on actually reaching the ground neighbourhood.
     # on_ground gives full credit; otherwise ramp up as altitude drops below 50 m.
     ground_gate = 1.0 if sim.on_ground else max(0.0, 1.0 - s.y / 50.0)
-    speed_pts   = max(0.0, 1.0 - speed / 40.0) * ground_gate * 25.0
+    # speed_pts   = max(0.0, 1.0 - speed / 40.0) * ground_gate * 25.0
     tilt_pts    = max(0.0, 1.0 - abs(s.theta) / (np.pi / 2)) * ground_gate * 15.0
 
     # Reward soft touchdowns — impact_speed is recorded at first ground contact.
     # Full 20 pts at 0 m/s impact, 0 pts at ≥30 m/s. Only applies if the
     # rocket actually reached the ground.
     if sim.on_ground:
-        impact_pts = max(0.0, 1.0 - sim.impact_speed / 30.0) * 20.0
+        impact_pts = max(0.0, 1.0 - sim.impact_speed / 30.0) * 40.0
     else:
         impact_pts = 0.0
 
-    survival    = (sim.time / sim.max_time) * 5.0
+   # survival    = (sim.time / sim.max_time) * 5.0
     fuel_bonus  = s.fuel * 40.0 if sim.landed else 0.0
 
-    return (proximity + descent + speed_pts + tilt_pts
-            + impact_pts + survival + fuel_bonus)
+    return (proximity + descent + tilt_pts
+            + impact_pts + fuel_bonus)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -361,7 +362,7 @@ def train(
                 archive.update(behaviours, rng)
 
                 # ── stats ────────────────────────────────────────────
-                best_idx = int(np.argmax(combined))
+                best_idx = int(np.argmax(fitnesses))
                 best_fit = fitnesses[best_idx]
                 mean_fit = float(fitnesses.mean())
                 suc_rate = float(landed.mean())
