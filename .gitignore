@@ -14,5 +14,5 @@ htmlcov/
 .DS_Store
 
 # Output
-*.png
+# *.png
 results/
