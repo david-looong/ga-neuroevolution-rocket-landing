@@ -330,6 +330,7 @@ def train(
     best_hist: list[float] = []
     mean_hist: list[float] = []
     renderer = None
+    stopped_by_window = False
 
     bg_result = None
     bg_thread = None
@@ -453,8 +454,11 @@ def train(
                             gi, normalize, diverse)
 
                         if result == "quit":
-                            print("  (window closed — continuing headless)")
+                            print("  (window closed — stopping training)")
+                            renderer.close()
                             renderer = None
+                            stopped_by_window = True
+                            break
 
                     except Exception as exc:
                         if renderer is not None:
@@ -499,7 +503,7 @@ def train(
     }
 
     # ── final fitness plot (interactive mode only) ───────────────
-    if not headless and best_hist:
+    if not headless and best_hist and not stopped_by_window:
         try:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -522,7 +526,7 @@ def train(
 
 
 def main():
-    train(headless=True)
+    train(headless=False)
 
 
 if __name__ == "__main__":
