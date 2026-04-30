@@ -190,11 +190,14 @@ def _evaluate_one(genome: np.ndarray, cur: dict, trial_seeds: list[int]):
     """Evaluate one genome over multiple randomised scenarios.
 
     Designed to run in a worker process — creates its own NN / Sim instances.
-    Returns (fitness, behaviour_vec, landed_any).
+    Returns (fitness, behaviour_vec, landed_any, mean_final_fuel,
+    mean_landed_fuel).
     """
     nn = NeuralNetwork(NN_LAYERS)
     nn.set_genome(genome)
     fits, bvecs = [], []
+    final_fuels = []
+    landed_fuels = []
     landed_any = False
 
     for seed in trial_seeds:
@@ -214,10 +217,22 @@ def _evaluate_one(genome: np.ndarray, cur: dict, trial_seeds: list[int]):
 
         fits.append(compute_fitness(sim))
         bvecs.append(acc.descriptor(sim))
+        final_fuels.append(sim.state.fuel)
         if sim.landed:
             landed_any = True
+            landed_fuels.append(sim.state.fuel)
 
-    return float(np.mean(fits)), np.mean(bvecs, axis=0), landed_any
+    mean_landed_fuel = (
+        float(np.mean(landed_fuels)) if landed_fuels else np.nan
+    )
+
+    return (
+        float(np.mean(fits)),
+        np.mean(bvecs, axis=0),
+        landed_any,
+        float(np.mean(final_fuels)),
+        mean_landed_fuel,
+    )
 
 
 def _worker_batch(args):
@@ -271,16 +286,20 @@ def evaluate_population(population, cur, trial_seeds, pool):
     fitnesses  = np.zeros(len(population))
     behaviours = np.zeros((len(population), 5))
     landed     = np.zeros(len(population), dtype=bool)
+    final_fuels = np.zeros(len(population))
+    landed_fuels = np.full(len(population), np.nan)
 
     idx = 0
     for batch_results in pool.map(_worker_batch, batches):
-        for f, b, l in batch_results:
+        for f, b, l, ff, lf in batch_results:
             fitnesses[idx]  = f
             behaviours[idx] = b
             landed[idx]     = l
+            final_fuels[idx] = ff
+            landed_fuels[idx] = lf
             idx += 1
 
-    return fitnesses, behaviours, landed
+    return fitnesses, behaviours, landed, final_fuels, landed_fuels
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -297,6 +316,7 @@ def train(
     mutation_rate: float = MUTATION_RATE,
     mutation_sigma: float = MUTATION_SIGMA,
     elitism_count: int = ELITISM_COUNT,
+    seed: int | None = RANDOM_SEED,
 ) -> dict:
     """Run the GA training loop and return per-generation metrics.
 
@@ -306,7 +326,7 @@ def train(
             "summary":     single dict with run-level summary stats,
         }
     """
-    rng = np.random.default_rng(RANDOM_SEED)
+    rng = np.random.default_rng(seed)
     genome_size = NeuralNetwork.genome_size(NN_LAYERS)
 
     import os
@@ -346,11 +366,13 @@ def train(
 
                 # ── Use background results if available, else evaluate now ──
                 if bg_result is not None:
-                    fitnesses, behaviours, landed, population, cur_used, elapsed = bg_result
+                    (fitnesses, behaviours, landed, final_fuels, landed_fuels,
+                     population, cur_used, elapsed) = bg_result
                     bg_result = None
                 else:
                     t0 = time.time()
-                    fitnesses, behaviours, landed = evaluate_population(
+                    (fitnesses, behaviours, landed, final_fuels,
+                     landed_fuels) = evaluate_population(
                         population, cur, trial_seeds, pool)
                     elapsed = time.time() - t0
                     cur_used = cur
@@ -367,6 +389,20 @@ def train(
                 best_fit = fitnesses[best_idx]
                 mean_fit = float(fitnesses.mean())
                 suc_rate = float(landed.mean())
+                mean_fuel = float(final_fuels.mean())
+                landed_fuel_values = landed_fuels[np.isfinite(landed_fuels)]
+                mean_landed_fuel = (
+                    float(landed_fuel_values.mean())
+                    if len(landed_fuel_values) else None
+                )
+                best_landed_fuel = (
+                    float(landed_fuel_values.max())
+                    if len(landed_fuel_values) else None
+                )
+                fuel_txt = (
+                    "--" if mean_landed_fuel is None
+                    else f"{mean_landed_fuel:.2f}"
+                )
 
                 best_hist.append(best_fit)
                 mean_hist.append(mean_fit)
@@ -376,10 +412,20 @@ def train(
 
                 gen_metrics.append({
                     "run_id": run_id,
+                    "seed": seed,
                     "generation": gen + 1,
                     "best_fitness": round(best_fit, 4),
                     "mean_fitness": round(mean_fit, 4),
                     "landing_rate": round(suc_rate, 4),
+                    "mean_fuel_remaining": round(mean_fuel, 4),
+                    "mean_landed_fuel_remaining": (
+                        round(mean_landed_fuel, 4)
+                        if mean_landed_fuel is not None else None
+                    ),
+                    "best_landed_fuel_remaining": (
+                        round(best_landed_fuel, 4)
+                        if best_landed_fuel is not None else None
+                    ),
                     "archive_size": len(archive.archive),
                     "phase": phase,
                     "elapsed_seconds": round(elapsed, 3),
@@ -388,6 +434,7 @@ def train(
                 print(f"Gen {gen+1:3d}/{num_generations} │ "
                       f"Best {best_fit:6.1f}  Mean {mean_fit:5.1f} │ "
                       f"Landed {suc_rate:5.1%} │ "
+                      f"Fuel {fuel_txt:>4s} │ "
                       f"Archive {len(archive.archive):4d} │ "
                       f"{phase:6s} │ {elapsed:.1f}s")
                 sys.stdout.flush()
@@ -403,8 +450,8 @@ def train(
 
                     def _bg_eval(pop=next_pop, c=next_cur, seeds=next_seeds):
                         t0 = time.time()
-                        f, b, l = evaluate_population(pop, c, seeds, pool)
-                        return (f, b, l, pop, c, time.time() - t0)
+                        f, b, l, ff, lf = evaluate_population(pop, c, seeds, pool)
+                        return (f, b, l, ff, lf, pop, c, time.time() - t0)
 
                     def _run_bg(fn):
                         nonlocal bg_result
@@ -422,8 +469,7 @@ def train(
                             renderer = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT,
                                                 VIS_SCALE, VIS_FPS)
 
-                        replay_seed = (RANDOM_SEED + gen
-                                       if RANDOM_SEED is not None else None)
+                        replay_seed = (seed + gen if seed is not None else None)
 
                         def _make_replay():
                             r = np.random.default_rng(replay_seed)
@@ -489,6 +535,7 @@ def train(
     final = gen_metrics[-1] if gen_metrics else {}
     summary = {
         "run_id": run_id,
+        "seed": seed,
         "pop_size": population_size,
         "tournament_size": tournament_size,
         "crossover_rate": crossover_rate,
@@ -499,6 +546,13 @@ def train(
         "final_best_fitness": final.get("best_fitness", 0.0),
         "final_mean_fitness": final.get("mean_fitness", 0.0),
         "final_landing_rate": final.get("landing_rate", 0.0),
+        "final_mean_fuel_remaining": final.get("mean_fuel_remaining", 0.0),
+        "final_mean_landed_fuel_remaining": final.get(
+            "mean_landed_fuel_remaining"
+        ),
+        "final_best_landed_fuel_remaining": final.get(
+            "best_landed_fuel_remaining"
+        ),
         "total_seconds": round(time.time() - run_start, 1),
     }
 

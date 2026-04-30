@@ -20,7 +20,7 @@ import sys
 
 from main import train
 from config import (
-    POPULATION_SIZE, NUM_GENERATIONS, TOURNAMENT_SIZE,
+    RANDOM_SEED, POPULATION_SIZE, NUM_GENERATIONS, TOURNAMENT_SIZE,
     CROSSOVER_RATE, MUTATION_RATE, MUTATION_SIGMA, ELITISM_COUNT,
 )
 
@@ -30,15 +30,19 @@ RUNS_CSV    = os.path.join(RESULTS_DIR, "runs.csv")
 GENS_CSV    = os.path.join(RESULTS_DIR, "generations.csv")
 
 RUNS_FIELDS = [
-    "run_id", "pop_size", "tournament_size", "crossover_rate",
+    "run_id", "seed", "pop_size", "tournament_size", "crossover_rate",
     "mutation_rate", "mutation_sigma", "elitism_count", "trial",
     "converged_gen", "final_best_fitness", "final_mean_fitness",
-    "final_landing_rate", "total_seconds",
+    "final_landing_rate", "final_mean_fuel_remaining",
+    "final_mean_landed_fuel_remaining", "final_best_landed_fuel_remaining",
+    "total_seconds",
 ]
 
 GENS_FIELDS = [
-    "run_id", "generation", "best_fitness", "mean_fitness",
-    "landing_rate", "archive_size", "phase", "elapsed_seconds",
+    "run_id", "seed", "generation", "best_fitness", "mean_fitness",
+    "landing_rate", "mean_fuel_remaining",
+    "mean_landed_fuel_remaining", "best_landed_fuel_remaining",
+    "archive_size", "phase", "elapsed_seconds",
 ]
 
 # ── Experiment definitions ────────────────────────────────────────
@@ -82,6 +86,7 @@ PARAM_SWEEPS = [
 ]
 
 NUM_TRIALS = 3
+EXPERIMENT_BASE_SEED = 420527 if RANDOM_SEED is None else RANDOM_SEED
 
 
 def _build_configs() -> list[dict]:
@@ -109,6 +114,11 @@ def _run_id(cfg: dict, trial: int) -> str:
     )
 
 
+def _trial_seed(config_index: int, trial: int) -> int:
+    """Return a reproducible, distinct RNG seed for one run."""
+    return int(EXPERIMENT_BASE_SEED + config_index * NUM_TRIALS + (trial - 1))
+
+
 def run_sweep(num_generations: int = NUM_GENERATIONS) -> None:
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -127,12 +137,13 @@ def run_sweep(num_generations: int = NUM_GENERATIONS) -> None:
 
     run_num = 0
     try:
-        for cfg in configs:
+        for config_index, cfg in enumerate(configs):
             for trial in range(1, NUM_TRIALS + 1):
                 run_num += 1
                 rid = _run_id(cfg, trial)
+                seed = _trial_seed(config_index, trial)
                 print(f"\n{'='*60}")
-                print(f"Run {run_num}/{total_runs}  id={rid}")
+                print(f"Run {run_num}/{total_runs}  id={rid}  seed={seed}")
                 print(f"{'='*60}")
                 sys.stdout.flush()
 
@@ -140,6 +151,7 @@ def run_sweep(num_generations: int = NUM_GENERATIONS) -> None:
                     headless=True,
                     run_id=rid,
                     num_generations=num_generations,
+                    seed=seed,
                     **cfg,
                 )
 
@@ -154,9 +166,12 @@ def run_sweep(num_generations: int = NUM_GENERATIONS) -> None:
                 runs_writer.writerow({k: summary[k] for k in RUNS_FIELDS})
                 runs_file.flush()
 
+                fuel = summary["final_mean_landed_fuel_remaining"]
+                fuel_txt = "--" if fuel is None else f"{fuel:.2f}"
                 print(f"  converged_gen={summary['converged_gen']}  "
                       f"final_best={summary['final_best_fitness']:.1f}  "
                       f"final_landed={summary['final_landing_rate']:.1%}  "
+                      f"landed_fuel={fuel_txt}  "
                       f"time={summary['total_seconds']:.0f}s")
 
     finally:
