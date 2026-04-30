@@ -1,3 +1,5 @@
+# systemd-inhibit --what=sleep:idle --why="GA rocket landing experiment" nice -n 10 ionice -c2 -n7 python experiment.py 2>&1 | tee results/experiment.log
+
 #!/usr/bin/env python3
 """
 Hyperparameter sweep for the GA neuroevolution rocket landing system.
