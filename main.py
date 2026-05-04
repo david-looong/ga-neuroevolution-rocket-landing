@@ -109,39 +109,32 @@ def compute_fitness(sim: RocketSim) -> float:
 
     1. Proximity to pad   (40 pts) — always; √-scaled for a gentle gradient
     2. Descent to ground  (20 pts) — always
-    4. Upright at end     (15 pts) — gated on being near the ground
-    5. Soft impact        (40 pts) — gated on ground contact; rewards low
-                                     impact speed at the moment of touchdown
-    7. Fuel efficiency    (40 pts) — ONLY awarded on a successful landing
+    3. Upright at end     (40 pts max) — gated on ``sim.on_ground``; squared
+       tilt factor so small tilt errors cost more
+    4. Soft impact        (40 pts max) — same gate as (3); linear in impact
+       speed (full at 0 m/s, 0 at ≥30 m/s)
+    5. Remaining fuel     (80 pts max) — ``state.fuel * 80`` ONLY when
+       ``sim.landed`` (physics LANDED_* thresholds)
 
-    40 + 20 + 15 + 40 + 40 = 155
+    Nominal max with ``INITIAL_FUEL == 1.0``: 40 + 20 + 40 + 40 + 80 = 220.
 
-    Max ≈ 165.  Early genomes score mostly on (1) and (2), giving them a
-    gradient to climb even before they manage soft landings.
+    Early genomes score mostly on (1) and (2), giving them a gradient to
+    climb even before they manage soft landings.
+
+    NOTE: Tilt and impact use ``sim.on_ground``; fuel uses ``sim.landed``.
     """
     s = sim.state
     dx = abs(s.x - sim.pad_x)
-    speed = np.sqrt(s.vx ** 2 + s.vy ** 2)
 
     proximity = max(0.0, 1.0 - (dx / 200.0) ** 0.5) * 40.0
     descent   = max(0.0, 1.0 - s.y / 300.0) * 20.0
 
-    # Gate speed / tilt on actually reaching the ground neighbourhood.
-    # on_ground gives full credit; otherwise ramp up as altitude drops below 50 m.
-    ground_gate = 1.0 if sim.on_ground else max(0.0, 1.0 - s.y / 50.0)
-    # speed_pts   = max(0.0, 1.0 - speed / 40.0) * ground_gate * 25.0
-    tilt_pts    = max(0.0, 1.0 - abs(s.theta) / (np.pi / 2)) * ground_gate * 15.0
+    # Tilt + impact only accrue while the rocket has ground contact.
+    ground_gate = 1.0 if sim.on_ground else 0.0
+    tilt_pts = max(0.0, 1.0 - abs(s.theta) / (np.pi / 2))**2 * ground_gate * 40.0
+    impact_pts = max(0.0, 1.0 - sim.impact_speed / 30.0) * 40.0 * ground_gate
 
-    # Reward soft touchdowns — impact_speed is recorded at first ground contact.
-    # Full 20 pts at 0 m/s impact, 0 pts at ≥30 m/s. Only applies if the
-    # rocket actually reached the ground.
-    if sim.on_ground:
-        impact_pts = max(0.0, 1.0 - sim.impact_speed / 30.0) * 40.0
-    else:
-        impact_pts = 0.0
-
-   # survival    = (sim.time / sim.max_time) * 5.0
-    fuel_bonus  = s.fuel * 40.0 if sim.landed else 0.0
+    fuel_bonus  = s.fuel * 80.0 if sim.landed else 0.0
 
     return (proximity + descent + tilt_pts
             + impact_pts + fuel_bonus)
