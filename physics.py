@@ -66,7 +66,8 @@ SETTLE_TIME = 4.0           # max seconds on ground before forcing resolution
 MIN_GROUND_TIME = 0.3       # minimum time before at-rest check fires
 SETTLED_SPEED = 0.5         # speed + ω threshold for "at rest"
 LANDED_SPEED = 8.0          # max speed at rest to count as landed
-LANDED_TILT = np.radians(25)  # max tilt at rest to count as landed
+LANDED_TILT = np.radians(10)  # max tilt at rest to count as landed
+LANDED_IMPACT_SPEED = 8.0   # max speed at first ground contact to count as landed
 EXPLODE_SPEED = 25.0        # impact speed above this → explosion
 CG_HEIGHT = ROCKET_HITBOX_HEIGHT / 2  # CG at local (0, CG_HEIGHT)
 
@@ -383,7 +384,8 @@ class RocketSim:
                 on_pad = abs(new_x - self.pad_x) <= self.pad_half_width
                 upright = abs(new_theta) < LANDED_TILT
                 slow = ground_speed < LANDED_SPEED
-                self.landed = on_pad and upright and slow
+                soft_impact = self.impact_speed < LANDED_IMPACT_SPEED
+                self.landed = on_pad and upright and slow and soft_impact
                 info["result"] = "landed" if self.landed else "crashed"
 
             if self.done and not self.frozen:

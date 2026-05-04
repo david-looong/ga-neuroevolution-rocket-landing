@@ -33,7 +33,7 @@ AIR_DENSITY = 1.225         # kg/m³
 DRAG_CD_A = 0.7             # Cd × reference area (m²), tunable
 
 # Simulation timing
-SIM_DT = 1.0 / 60.0        # 60 Hz physics timestep
+SIM_DT = 1.0 / 30.0        # 60 Hz physics timestep
 MAX_SIM_TIME = 30.0         # seconds per episode
 
 # Landing pad
@@ -44,10 +44,10 @@ PAD_WIDTH = 40.0            # total pad width (m)
 WIND_OU_THETA = 0.3         # mean-reversion rate
 
 # ========================= INITIAL CONDITIONS ===================
-ALTITUDE_RANGE = (400.0, 400.0)
-HORIZONTAL_RANGE = (180.0, 200.0)
-INIT_VY_RANGE = (-40.0, -20.0)      # downward
-INIT_VX_RANGE = (-30.0, 10.0)
+ALTITUDE_RANGE = (400.0, 600.0)
+HORIZONTAL_RANGE = (-250.0, 250.0)
+INIT_VY_RANGE = (-80.0, -20.0)      # downward
+INIT_VX_RANGE = (-40.0, 40.0)
 INIT_ANGLE_RANGE = np.radians(60)   # ±20°
 
 # ALTITUDE_RANGE = (400.0, 500.0)
@@ -67,25 +67,25 @@ CURRICULUM = [
     (100, 0.20, 0.20, 15.0),   # Gen 100+:   full randomization
 ]
 
-NUM_EVAL_TRIALS = 1  # scenarios per genome (averaged for noise reduction)
+NUM_EVAL_TRIALS = 8  # scenarios per genome (averaged for noise reduction)
 
 # ========================= NEURAL NETWORK =======================
-NN_LAYERS = [6, 32, 32, 2]  # input → hidden → hidden → output
+NN_LAYERS = [6, 16, 16, 2]  # input → hidden → hidden → output
 
 # Input normalization divisors (keep inputs roughly in [-1, 1])
 NORM_X = 200.0
 NORM_Y = 400.0
-NORM_VX = 60.0
-NORM_VY = 60.0
+NORM_VX = 80.0
+NORM_VY = 80.0
 NORM_THETA = np.pi
 NORM_OMEGA = 5.0
 
 # ========================= GENETIC ALGORITHM ====================
 POPULATION_SIZE = 100
 NUM_GENERATIONS = 300
-TOURNAMENT_SIZE = 5
+TOURNAMENT_SIZE = 7
 CROSSOVER_RATE = 0.7
-MUTATION_RATE = 0.1          # per-gene probability
+MUTATION_RATE = 0.1       # per-gene probability
 MUTATION_SIGMA = 0.1        # Gaussian noise σ
 ELITISM_COUNT = 5
 

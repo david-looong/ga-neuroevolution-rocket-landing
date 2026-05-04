@@ -317,6 +317,7 @@ def train(
     mutation_sigma: float = MUTATION_SIGMA,
     elitism_count: int = ELITISM_COUNT,
     seed: int | None = RANDOM_SEED,
+    num_eval_trials: int | None = None,
 ) -> dict:
     """Run the GA training loop and return per-generation metrics.
 
@@ -328,6 +329,7 @@ def train(
     """
     rng = np.random.default_rng(seed)
     genome_size = NeuralNetwork.genome_size(NN_LAYERS)
+    n_trials = NUM_EVAL_TRIALS if num_eval_trials is None else num_eval_trials
 
     import os
     n_workers = os.cpu_count() or 4
@@ -335,7 +337,7 @@ def train(
     if not headless:
         print(f"Genome size : {genome_size} parameters")
         print(f"Population  : {population_size}   Generations: {num_generations}")
-        print(f"Trials/genome: {NUM_EVAL_TRIALS}   Workers: {n_workers}\n")
+        print(f"Trials/genome: {n_trials}   Workers: {n_workers}\n")
 
     ga = GeneticAlgorithm(
         pop_size=population_size, genome_size=genome_size,
@@ -362,7 +364,7 @@ def train(
             for gen in range(num_generations):
                 cur = get_curriculum(gen)
                 trial_seeds = [int(rng.integers(0, 2 ** 31))
-                               for _ in range(NUM_EVAL_TRIALS)]
+                               for _ in range(n_trials)]
 
                 # ── Use background results if available, else evaluate now ──
                 if bg_result is not None:
@@ -446,7 +448,7 @@ def train(
                 next_cur = get_curriculum(gen + 1) if gen + 1 < num_generations else None
                 if next_cur is not None:
                     next_seeds = [int(rng.integers(0, 2 ** 31))
-                                  for _ in range(NUM_EVAL_TRIALS)]
+                                  for _ in range(n_trials)]
 
                     def _bg_eval(pop=next_pop, c=next_cur, seeds=next_seeds):
                         t0 = time.time()
@@ -542,6 +544,7 @@ def train(
         "mutation_rate": mutation_rate,
         "mutation_sigma": mutation_sigma,
         "elitism_count": elitism_count,
+        "num_eval_trials": n_trials,
         "converged_gen": converged_gen,
         "final_best_fitness": final.get("best_fitness", 0.0),
         "final_mean_fitness": final.get("mean_fitness", 0.0),
@@ -580,7 +583,15 @@ def train(
 
 
 def main():
-    train(headless=False)
+    import argparse
+    p = argparse.ArgumentParser(description="2D rocket landing GA training")
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        help="No pygame preview between generations (faster; default is interactive)",
+    )
+    args = p.parse_args()
+    train(headless=args.headless)
 
 
 if __name__ == "__main__":

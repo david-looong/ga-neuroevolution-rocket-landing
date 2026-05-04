@@ -7,6 +7,7 @@ Shows all rockets simultaneously: the best genome in full colour, others at
 import numpy as np
 
 try:
+    from datetime import datetime
     from pathlib import Path
     import pygame
     HAS_PYGAME = True
@@ -245,6 +246,13 @@ class Renderer:
                 return "quit"
             if action == "skip":
                 return "skip"
+            if action == "export_trails":
+                saved = self.export_trails_transparent_png(
+                    trails, is_best, best_j)
+                if saved:
+                    print(f"Trail overlay saved: {saved}")
+                else:
+                    print("Trail export skipped (no visible trail yet).")
 
             physics_steps = 0
             while (sim_accum >= sim_step_dt
@@ -327,6 +335,14 @@ class Renderer:
                 return "quit"
             if action in ("skip", "next"):
                 break
+            if action == "export_trails":
+                saved = self.export_trails_transparent_png(
+                    trails, is_best, best_j)
+                if saved:
+                    print(f"Trail overlay saved: {saved}")
+                else:
+                    print("Trail export skipped (empty trails).")
+                continue
             if action == "hold_result":
                 hold_result = not hold_result
                 continue
@@ -347,6 +363,62 @@ class Renderer:
 
     def close(self):
         pygame.quit()
+
+    def export_trails_transparent_png(self, trails, is_best, best_j,
+                                      path=None, *, crop=True, pad_px=6):
+        """Composite only flight trails (no background, HUD, or rockets) and save PNG.
+
+        All rockets use the same stroke color/alpha in the file (ghosts are not dimmed).
+        The best trail is still drawn last, so overlaps read clearly.
+        """
+        surf = self._composite_trails_surface(trails, is_best, best_j)
+        rect = surf.get_rect()
+        if crop:
+            bounds = surf.get_bounding_rect(min_alpha=1)
+            if bounds.width == 0 or bounds.height == 0:
+                return None
+            bounds = bounds.inflate(pad_px * 2, pad_px * 2).clip(rect)
+            out = surf.subsurface(bounds).copy()
+        else:
+            out = surf
+
+        if path is None:
+            out_dir = Path(__file__).resolve().parent / "results"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = out_dir / f"trails_{stamp}.png"
+        else:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+        pygame.image.save(out, str(path))
+        return path
+
+    def _composite_trails_surface(self, trails, is_best, best_j):
+        """Full-window RGBA surface: all rockets use the same trail color/alpha (export only).
+
+        On-screen, ghosts are dimmer; exports use one RGB + peak alpha so lightness matches.
+        ``hot_color`` matches ``base_color`` so segments do not brighten toward the nose.
+        """
+        surf = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
+        n = len(trails)
+        c = self.TRAIL
+        a = 220
+        w = 4
+        every = 8
+        hot = c
+        for j in range(n):
+            if is_best[j]:
+                continue
+            self._draw_trail(
+                surf, trails[j], c, a,
+                self.TRAIL_MAX_SEGMENTS, max_width=w, node_every=every,
+                hot_color=hot)
+        self._draw_trail(
+            surf, trails[best_j], c, a,
+            self.TRAIL_MAX_SEGMENTS, max_width=w, node_every=every,
+            hot_color=hot)
+        return surf
 
     # ── event handling ──────────────────────────────────────────────
 
@@ -379,6 +451,8 @@ class Renderer:
                     return "next"
                 if ev.key == pygame.K_h:
                     return "hold_result"
+                if ev.key == pygame.K_t:
+                    return "export_trails"
                 if ev.key in (pygame.K_EQUALS, pygame.K_PLUS):
                     self._set_camera_zoom(self.camera_zoom + self.ZOOM_STEP)
                 if ev.key in (pygame.K_MINUS, pygame.K_UNDERSCORE):
@@ -594,41 +668,35 @@ class Renderer:
         return surface.subsurface(bounds).copy()
 
     def _fitness_breakdown(self, sim):
-        """Return replay fitness terms matching main.compute_fitness."""
+        """Return replay fitness terms — must match ``main.compute_fitness``.
+
+        If you change the formulas here, change them in main.py too (and
+        vice-versa). Both functions read ``sim.landed`` for the fuel bonus,
+        which already reflects the LANDED_* thresholds in physics.py.
+        """
         s = sim.state
         dx = abs(s.x - sim.pad_x)
 
         proximity = max(0.0, 1.0 - (dx / 200.0) ** 0.5) * 40.0
         descent = max(0.0, 1.0 - s.y / 300.0) * 20.0
 
-        ground_gate = 1.0 if sim.on_ground else max(0.0, 1.0 - s.y / 50.0)
+        ground_gate = 1.0 if sim.on_ground else 0.0
         tilt_deg = abs(np.degrees(s.theta))
-        tilt_pts = max(0.0, 1.0 - abs(s.theta) / (np.pi / 2)) * ground_gate * 15.0
+        tilt_pts = (
+            max(0.0, 1.0 - abs(s.theta) / (np.pi / 2)) ** 2 * ground_gate * 40.0
+        )
+        impact_pts = (
+            max(0.0, 1.0 - sim.impact_speed / 30.0) * 40.0 * ground_gate
+        )
 
-        #impact_pts = (max(0.0, 1.0 - sim.impact_speed / 30.0) * 40.0
-        #              if sim.on_ground else 0.0)
-
-        if sim.on_ground:
-            v = sim.impact_speed
-            # Base reward: exponential decay
-            impact_pts = max(0.0, 1.0 - sim.impact_speed / 30.0) * 40.0
-            # Tier bonuses for hitting milestones
-            #if v < 10.0: impact_pts += 5.0   # "survivable"
-            #if v < 5.0:  impact_pts += 10.0  # "soft landing"
-            #if v < 2.0:  impact_pts += 15.0  # "feather landing"
-            #if v < 0.5:  impact_pts += 20.0  # "perfect"
-        else:
-            impact_pts = 0.0
-
-        fuel_used = 1.0 - s.fuel
-        fuel_bonus = s.fuel * 40.0 if sim.landed else 0.0
+        fuel_bonus = s.fuel * 80.0 if sim.landed else 0.0
 
         terms = [
             ("PROX", f"dx {dx:5.1f}m", proximity, 40.0),
             ("DESC", f"alt {s.y:5.1f}m", descent, 20.0),
-            ("TILT", f"{tilt_deg:5.1f}deg", tilt_pts, 15.0),
+            ("TILT", f"{tilt_deg:5.1f}deg", tilt_pts, 40.0),
             ("IMPACT", f"{sim.impact_speed:5.1f}m/s", impact_pts, 40.0),
-            ("FUEL", f"used {fuel_used:4.0%}", fuel_bonus, 40.0),
+            ("FUEL", f"rem {s.fuel:4.0%}", fuel_bonus, 80.0),
         ]
         total = sum(points for _, _, points, _ in terms)
         return total, terms
@@ -935,6 +1003,7 @@ class Renderer:
             (self.font, f"WIND  {wind:+6.1f}", self.HUD, 6),
             (self.font, f"ZOOM  {self.camera_zoom:.2f}X", self.HUD, 6),
             (self.font, "WASD PAN  +/- ZOOM", self.HUD_DIM, 6),
+            (self.font, "T EXPORT TRAILS PNG", self.HUD_DIM, 6),
         ]
         rendered_text = [
             (self._render_pixel_text(font, text, color), gap)
